@@ -2,69 +2,70 @@ import streamlit as st
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup
-import datetime
-import os
 
-# --- CONFIGURATION ---
-TARGET_URL = "https://www.lankapropertyweb.com/house/forsale/mount-lavinia/"
-DB_FILE = "property_db.csv"
+# --- 1. SEARCH CONFIGURATION ---
+# We'll use a more general search URL to ensure we get results first
+SEARCH_URL = "https://www.lankapropertyweb.com/house/forsale/mount-lavinia/"
 
-def get_data():
-    headers = {'User-Agent': 'Mozilla/5.0'}
+def scrape_with_validation():
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+    }
+    
     try:
-        res = requests.get(TARGET_URL, headers=headers)
-        soup = BeautifulSoup(res.text, 'html.parser')
+        response = requests.get(SEARCH_URL, headers=headers, timeout=10)
+        if response.status_code != 200:
+            return None, f"Site blocked us (Status {response.status_code})"
+            
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # LankaProperty uses 'cl-listing-card' or 'listing-card'
+        # Let's try to find any link that looks like a property
         listings = []
-        for card in soup.select('.cl-listing-card'):
-            link_tag = card.find('a')
-            if not link_tag: continue
-            link = "https://www.lankapropertyweb.com" + link_tag['href']
-            prop_id = link.split('/')[-2] 
-            listings.append({
-                "id": str(prop_id), # Ensure ID is always a string
-                "title": card.select_one('.cl-listing-title').text.strip(),
-                "price": card.select_one('.price').text.strip(),
-                "link": link,
-                "date_found": datetime.date.today().strftime("%Y-%m-%d")
-            })
-        return pd.DataFrame(listings)
+        cards = soup.find_all('div', class_='cl-listing-card')
+        
+        for card in cards:
+            try:
+                title_elem = card.select_one('.cl-listing-title') or card.find('h3')
+                price_elem = card.select_one('.price')
+                link_elem = card.find('a', href=True)
+                
+                if title_elem and link_elem:
+                    listings.append({
+                        "title": title_elem.text.strip(),
+                        "price": price_elem.text.strip() if price_elem else "Contact for Price",
+                        "link": "https://www.lankapropertyweb.com" + link_elem['href'] if not link_elem['href'].startswith('http') else link_elem['href']
+                    })
+            except Exception:
+                continue
+        
+        return listings, None
     except Exception as e:
-        st.error(f"Error fetching data: {e}")
-        return pd.DataFrame(columns=["id", "title", "price", "link", "date_found"])
+        return None, str(e)
 
-# --- APP INTERFACE ---
-st.title("👨‍🦳 Dad's Property Assistant")
+# --- 2. THE INTERFACE ---
+st.set_page_config(page_title="Lanka Property Scraper", layout="wide")
+st.title("🔎 Real-Time LankaProperty Sync")
 
-# Safety Check: Load or create history
-if os.path.exists(DB_FILE):
-    history_df = pd.read_csv(DB_FILE, dtype={'id': str})
-else:
-    # This part prevents the KeyError you saw
-    history_df = pd.DataFrame(columns=["id", "shortlisted"])
-
-live_df = get_data()
-
-# Logic: Filter out what he has already seen
-if not live_df.empty:
-    new_listings = live_df[~live_df['id'].isin(history_df['id'])]
-else:
-    new_listings = pd.DataFrame()
-
-tab1, tab2 = st.tabs(["🆕 New Matches", "⭐ Shortlist"])
-
-with tab1:
-    if new_listings.empty:
-        st.info("No new houses found since your last check!")
-    else:
-        st.subheader(f"Found {len(new_listings)} new properties")
-        for _, row in new_listings.iterrows():
-            with st.container(border=True):
-                st.write(f"**{row['title']}**")
-                st.write(f"💰 {row['price']}")
-                col1, col2 = st.columns(2)
-                col1.link_button("View Website", row['link'])
-                if col2.button("⭐ Shortlist", key=row['id']):
-                    st.success("Saved!")
-
-with tab2:
-    st.write("Shortlisted items will appear here soon.")
+if st.button('🔄 Sync Now'):
+    with st.spinner('Fetching live data...'):
+        data, error = scrape_with_validation()
+        
+        if error:
+            st.error(f"Scraper Error: {error}")
+        elif not data:
+            st.warning("Connected to site, but found 0 listings. The website structure might have changed.")
+            # Debugging: Show the HTML if it fails
+            # st.code(response.text[:500]) 
+        else:
+            st.success(f"Successfully found {len(data)} listings!")
+            
+            # Display as a nice table
+            df = pd.DataFrame(data)
+            st.dataframe(df, use_container_width=True)
+            
+            # Display as Cards
+            for item in data:
+                with st.expander(f"🏠 {item['title']} - {item['price']}"):
+                    st.write(f"Link: {item['link']}")
+                    st.link_button("Go to Listing", item['link'])
