@@ -1,77 +1,75 @@
 import streamlit as st
 import pandas as pd
-import requests
+import undetected_chromedriver as uc
 from bs4 import BeautifulSoup
 import time
+import os
 
-# --- 1. THE STEALTH ENGINE ---
-def get_stealth_session():
-    session = requests.Session()
-    # These headers mimic a real Chrome browser on Windows 10
-    session.headers.update({
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Accept-Encoding': 'gzip, deflate, br',
-        'Connection': 'keep-alive',
-        'Upgrade-Insecure-Requests': '1',
-        'Sec-Fetch-Dest': 'document',
-        'Sec-Fetch-Mode': 'navigate',
-        'Sec-Fetch-Site': 'none',
-        'Sec-Fetch-User': '?1',
-        'Cache-Control': 'max-age=0'
-    })
-    return session
+# --- APP SETUP ---
+st.set_page_config(page_title="LankaProperty Pro", layout="wide")
+st.title("🏡 LankaProperty Scalable Sync")
 
-def scrape_robust():
-    url = "https://www.lankapropertyweb.com/house/forsale/mount-lavinia/"
-    session = get_stealth_session()
+def get_listings(category_url):
+    options = uc.ChromeOptions()
+    options.add_argument('--headless') # Runs in the background
+    options.add_argument('--no-sandbox')
     
+    # Start the "Stealth" browser
     try:
-        # Step 1: Visit the homepage first to get a "session cookie" (more human-like)
-        session.get("https://www.lankapropertyweb.com/", timeout=10)
-        time.sleep(1) # Wait a second to avoid looking robotic
+        driver = uc.Chrome(options=options)
+        driver.get(category_url)
         
-        # Step 2: Now visit the actual search page
-        response = session.get(url, timeout=15)
+        # IMPORTANT: Wait for Cloudflare to finish its 5-second check
+        time.sleep(7) 
         
-        if response.status_code != 200:
-            return None, f"Still blocked (Error {response.status_code})."
-
-        soup = BeautifulSoup(response.text, 'html.parser')
+        soup = BeautifulSoup(driver.page_source, 'html.parser')
+        driver.quit()
+        
         listings = []
-        
-        # LankaProperty often puts listings in 'cl-listing-card'
+        # Target the listing cards specifically found on LankaProperty
         cards = soup.find_all('div', class_='cl-listing-card')
         
         for card in cards:
-            title = card.find('h3').text.strip() if card.find('h3') else "No Title"
-            price = card.select_one('.price').text.strip() if card.select_one('.price') else "Negotiable"
-            link = card.find('a')['href']
-            if not link.startswith('http'):
-                link = "https://www.lankapropertyweb.com" + link
+            try:
+                title = card.find('h3').text.strip()
+                price = card.select_one('.price').text.strip()
+                link = "https://www.lankapropertyweb.com" + card.find('a')['href']
                 
-            listings.append({"Title": title, "Price": price, "Link": link})
-            
-        return listings, None
-
+                listings.append({
+                    "Title": title, 
+                    "Price": price, 
+                    "Link": link,
+                    "ID": link.split('/')[-2]
+                })
+            except: continue
+        return listings
     except Exception as e:
-        return None, str(e)
+        st.error(f"Sync failed: {e}")
+        return []
 
-# --- 2. THE DASHBOARD ---
-st.title("🏠 Dad's Real-Time Property Tracker")
+# --- THE INTERFACE ---
+col1, col2 = st.columns(2)
+with col1:
+    if st.button("🔍 Sync Houses (Mount Lavinia)"):
+        url = "https://www.lankapropertyweb.com/house/forsale/mount-lavinia/"
+        data = get_listings(url)
+        st.session_state['listings'] = data
 
-if st.button('🚀 Fetch Latest Houses'):
-    results, err = scrape_robust()
-    if err:
-        st.error(f"⚠️ {err}")
-        st.info("Try clicking again in 1 minute. The site might be rate-limiting us.")
-    elif not results:
-        st.warning("Connected successfully, but no houses found. Check the URL!")
-    else:
-        st.success(f"Found {len(results)} listings!")
-        for item in results:
-            with st.container(border=True):
-                st.subheader(item['Title'])
-                st.write(f"**Price:** {item['Price']}")
-                st.link_button("View Details", item['Link'])
+with col2:
+    if st.button("🌳 Sync Lands"):
+        url = "https://www.lankapropertyweb.com/land/sale/mount-lavinia/"
+        data = get_listings(url)
+        st.session_state['listings'] = data
+
+if 'listings' in st.session_state:
+    df = pd.DataFrame(st.session_state['listings'])
+    
+    # Dad's Filters (Applied to the data we just found)
+    st.divider()
+    st.subheader("Results")
+    
+    for _, item in df.iterrows():
+        with st.container(border=True):
+            st.write(f"### {item['Title']}")
+            st.write(f"💰 **{item['Price']}**")
+            st.link_button("View on LankaProperty", item['Link'])
